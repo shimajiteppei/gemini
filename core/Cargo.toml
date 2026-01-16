@@ -1,0 +1,15 @@
+[package]
+name = "core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tracing = "0.1.44"
+tracing-subscriber = {version = "0.3.22", features = ["json"]}
+
+[lints.clippy]
+restriction = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+
+single_call_fn = { level = "allow", priority = 1 }
+implicit_return = { level = "allow", priority = 1 }

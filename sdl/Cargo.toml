@@ -1,0 +1,4 @@
+[package]
+name = "sdl"
+version.workspace = true
+edition.workspace = true
