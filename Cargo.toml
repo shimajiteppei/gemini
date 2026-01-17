@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "core",
-    "sdl",
-    "wasm"
+    "gemini_core",
+    "gemini_sdl",
+    "gemini_wasm"
 ]
 resolver = "2"
 

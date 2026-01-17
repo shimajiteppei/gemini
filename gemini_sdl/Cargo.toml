@@ -1,0 +1,8 @@
+[package]
+name = "gemini_sdl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gemini_core = { path = "../gemini_core" }
+sdl2 = { version = "0.38.0", features = ["bundled"] }
