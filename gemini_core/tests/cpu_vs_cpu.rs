@@ -3,7 +3,7 @@
 /// 統合テスト本体。
 #[cfg(test)]
 mod tests {
-    use gemini_core::ai::types::Ai;
+    use gemini_core::ai::types::Ai as _;
     use gemini_core::{ai, engine};
 
     /// `alphabeta` が合法手のみ選ぶことを確認する。
@@ -24,8 +24,7 @@ mod tests {
         );
         let square = match mv {
             ai::Move::Place(value) => value,
-            ai::Move::Pass => return,
-            _ => return,
+            ai::Move::Pass | _ => return,
         };
 
         assert!(
@@ -52,9 +51,8 @@ mod tests {
             };
 
             let play_result = match mv {
-                ai::Move::Pass => game.play(None),
                 ai::Move::Place(square) => game.play(Some(square)),
-                _ => game.play(None),
+                ai::Move::Pass | _ => game.play(None),
             };
 
             assert!(
@@ -109,9 +107,8 @@ mod tests {
             };
 
             let play_result = match mv {
-                ai::Move::Pass => game.play(None),
                 ai::Move::Place(square) => game.play(Some(square)),
-                _ => game.play(None),
+                ai::Move::Pass | _ => game.play(None),
             };
 
             assert!(

@@ -7,15 +7,44 @@
 mod wasm32_app {
     use gemini_core::ai::types::Ai;
     use gemini_core::{ai, engine};
-    use wasm_bindgen::JsValue;
-    use wasm_bindgen::prelude::*;
-    use web_sys::CanvasRenderingContext2d;
+    use wasm_bindgen::prelude::wasm_bindgen;
 
-    /// 盤面描画のオフセット。
-    const OFFSET: f64 = 8.0;
+    /// 盤面の描画は JS 側に委譲する。
+    ///
+    /// Rust 側は「描画イベントを発火する」だけにして、Canvas API には触れない。
+    #[wasm_bindgen]
+    extern "C" {
+        /// 1フレームの描画開始（盤面/背景のクリア等）。
+        #[wasm_bindgen(js_namespace = window)]
+        fn render_begin();
 
-    /// AI 手番の遅延（ミリ秒）。
-    const AI_DELAY_MS: f64 = 300.0;
+        /// 合法手ハイライト用。
+        #[wasm_bindgen(js_namespace = window)]
+        fn render_hint(x: u8, y: u8);
+
+        /// 駒の描画。
+        ///
+        /// - `color`: 0=Black, 1=White
+        #[wasm_bindgen(js_namespace = window)]
+        fn render_cell(x: u8, y: u8, color: u8);
+
+        /// 1フレームの描画終了（後処理があれば）。
+        #[wasm_bindgen(js_namespace = window)]
+        fn render_end();
+    }
+
+    const COLOR_BLACK: u8 = 0;
+    const COLOR_WHITE: u8 = 1;
+
+    const SIDE_BLACK: u8 = 0;
+    const SIDE_WHITE: u8 = 1;
+    const SIDE_UNKNOWN: u8 = 255;
+
+    const STATUS_IN_PROGRESS: u8 = 0;
+    const STATUS_BLACK_WINS: u8 = 1;
+    const STATUS_WHITE_WINS: u8 = 2;
+    const STATUS_DRAW: u8 = 3;
+    const STATUS_UNKNOWN: u8 = 255;
 
     #[derive(Debug)]
     enum Controller {
@@ -44,7 +73,6 @@ mod wasm32_app {
     pub struct App {
         black: Controller,
         game: engine::Game,
-        next_ai_due_ms: f64,
         white: Controller,
     }
 
@@ -52,13 +80,17 @@ mod wasm32_app {
     impl App {
         /// human（黒） vs `depth_white` の alphabeta（白）。
         #[wasm_bindgen(constructor)]
-        pub fn new(depth_white: u8) -> Self {
+        pub fn new() -> Self {
             Self {
                 black: Controller::Human,
                 game: engine::Game::initial(),
-                next_ai_due_ms: -1.0,
-                white: Controller::Alphabeta(ai::alphabeta::Agent::new(depth_white)),
+                white: Controller::Human,
             }
+        }
+
+        /// 黒を alphabeta に切り替える。
+        pub fn set_black_alphabeta(&mut self, depth: u8) {
+            self.black = Controller::Alphabeta(ai::alphabeta::Agent::new(depth));
         }
 
         /// 黒を random に切り替える。
@@ -71,14 +103,14 @@ mod wasm32_app {
             self.black = Controller::Human;
         }
 
-        /// 白を random に切り替える。
-        pub fn set_white_random(&mut self, seed: u64) {
-            self.white = Controller::Random(ai::random::Agent::new(seed));
-        }
-
         /// 白を alphabeta に切り替える。
         pub fn set_white_alphabeta(&mut self, depth: u8) {
             self.white = Controller::Alphabeta(ai::alphabeta::Agent::new(depth));
+        }
+
+        /// 白を random に切り替える。
+        pub fn set_white_random(&mut self, seed: u64) {
+            self.white = Controller::Random(ai::random::Agent::new(seed));
         }
 
         /// 白を human に切り替える。
@@ -101,12 +133,7 @@ mod wasm32_app {
                 None => return false,
             };
 
-            let ok = self.game.play(Some(square)).is_ok();
-            if ok {
-                // 次に AI 手番が来た場合は、初回 tick で遅延を開始する。
-                self.next_ai_due_ms = -1.0;
-            }
-            ok
+            self.game.play(Some(square)).is_ok()
         }
 
         /// パスを試みる（合法なら true）。
@@ -119,34 +146,24 @@ mod wasm32_app {
                 return false;
             }
 
-            let ok = self.game.play(None).is_ok();
-            if ok {
-                // 次に AI 手番が来た場合は、初回 tick で遅延を開始する。
-                self.next_ai_due_ms = -1.0;
-            }
-            ok
+            self.game.play(None).is_ok()
         }
 
-        /// AI 手番を 1 手だけ進める（AI 手番は 0.3 秒遅延）。
+        /// AI 手番を 1 手だけ進める。
         ///
-        /// - `now_ms`: `performance.now()` 相当の単調増加時刻（ミリ秒）。
         /// - 実行した手数（0 or 1）を返す。
-        pub fn tick_ai(&mut self, now_ms: f64) -> u32 {
+        /// - 300ms 遅延などの「待ち」は JS 側の責務とする。
+        pub fn tick_ai(&mut self) -> u32 {
             if self.game.is_game_over() {
                 return 0;
             }
 
             let side = self.game.side_to_move();
             if self.controller_for(side).is_human() {
-                return 0;
-            }
-
-            // AI 手番に入った直後は、まず遅延タイマーをセットして待つ。
-            if self.next_ai_due_ms < 0.0 {
-                self.next_ai_due_ms = now_ms + AI_DELAY_MS;
-                return 0;
-            }
-            if now_ms < self.next_ai_due_ms {
+                // 人間手番だが合法手が無い場合は自動パスして、ゲーム進行が止まらないようにする。
+                if self.game.auto_pass_if_needed() {
+                    return 1;
+                }
                 return 0;
             }
 
@@ -158,17 +175,10 @@ mod wasm32_app {
                 _ => self.game.play(None),
             };
             if play_result.is_ok() {
-                // 次の AI 手番のために、遅延開始をリセットする。
-                self.next_ai_due_ms = -1.0;
                 1
             } else {
                 0
             }
-        }
-
-        /// AI 手番遅延を今から開始する（例: 人間が着手した直後に呼ぶ）。
-        pub fn arm_ai_delay(&mut self, now_ms: f64) {
-            self.next_ai_due_ms = now_ms + AI_DELAY_MS;
         }
 
         /// AI が動けるなら最大 `max_steps` 手だけ進める。実行した手数を返す。
@@ -200,46 +210,57 @@ mod wasm32_app {
             done
         }
 
-        /// 状態表示用の文字列を返す。
-        pub fn status_text(&self) -> String {
+        /// 盤面上の黒石数を返す。
+        pub fn count_black(&self) -> u32 {
             let position = self.game.position();
-            let (black, white) = position.counts();
-            let side = self.game.side_to_move();
-            let side_text = match side {
-                engine::Color::Black => "Black",
-                engine::Color::White => "White",
-                _ => "Unknown",
-            };
+            let (black, _) = position.counts();
+            black
+        }
 
-            let status = self.game.status();
-            match status {
-                engine::GameStatus::InProgress => {
-                    format!("{side_text} to move | B={black} W={white}")
-                }
-                engine::GameStatus::GameOver { black: b, white: w } => {
-                    let result = if b > w {
-                        "Black wins"
-                    } else if b < w {
-                        "White wins"
-                    } else {
-                        "Draw"
-                    };
-                    format!("Game Over: {result} | B={b} W={w}")
-                }
-                _ => format!("Unknown status | B={black} W={white}"),
+        /// 盤面上の白石数を返す。
+        pub fn count_white(&self) -> u32 {
+            let position = self.game.position();
+            let (_, white) = position.counts();
+            white
+        }
+
+        /// 手番を返す。
+        ///
+        /// - 0=Black, 1=White, 255=Unknown
+        pub fn side_to_move(&self) -> u8 {
+            match self.game.side_to_move() {
+                engine::Color::Black => SIDE_BLACK,
+                engine::Color::White => SIDE_WHITE,
+                _ => SIDE_UNKNOWN,
             }
         }
 
-        /// Canvas へ盤面を描画する。
+        /// ゲーム状態（勝敗）を返す。
         ///
-        /// - `cell_size`: 1マスのピクセルサイズ（例: 64.0）
-        pub fn render(&self, ctx: &CanvasRenderingContext2d, cell_size: f64) {
-            let board_len: f64 = 8.0;
-            let board_px = board_len * cell_size;
-            let full = board_px + OFFSET * 2.0;
+        /// - 0=InProgress
+        /// - 1=Black wins
+        /// - 2=White wins
+        /// - 3=Draw
+        /// - 255=Unknown
+        pub fn status_code(&self) -> u8 {
+            match self.game.status() {
+                engine::GameStatus::InProgress => STATUS_IN_PROGRESS,
+                engine::GameStatus::GameOver { black, white } => {
+                    if black > white {
+                        STATUS_BLACK_WINS
+                    } else if black < white {
+                        STATUS_WHITE_WINS
+                    } else {
+                        STATUS_DRAW
+                    }
+                }
+                _ => STATUS_UNKNOWN,
+            }
+        }
 
-            ctx.set_fill_style(&JsValue::from_str("#105010"));
-            ctx.fill_rect(0.0, 0.0, full, full);
+        /// 盤面の描画イベントを発火する（実描画は JS 側）。
+        pub fn render(&self) {
+            render_begin();
 
             let position = self.game.position();
             let legal_moves = position.legal_moves();
@@ -247,50 +268,24 @@ mod wasm32_app {
 
             for y in 0..8 {
                 for x in 0..8 {
-                    let fx = f64::from(x);
-                    let fy = f64::from(y);
-                    let left = OFFSET + fx * cell_size;
-                    let top = OFFSET + fy * cell_size;
-
-                    ctx.set_fill_style(&JsValue::from_str("#008000"));
-                    ctx.fill_rect(left, top, cell_size, cell_size);
-
-                    ctx.set_stroke_style(&JsValue::from_str("#000000"));
-                    ctx.stroke_rect(left, top, cell_size, cell_size);
-
                     let square = match engine::Square::from_xy(x, y) {
                         Some(value) => value,
                         None => continue,
                     };
 
                     if highlight && legal_moves & square.bit() != u64::MIN {
-                        let r = cell_size / 10.0;
-                        let cx = left + cell_size / 2.0;
-                        let cy = top + cell_size / 2.0;
-                        ctx.begin_path();
-                        let _: Result<(), JsValue> = ctx.arc(cx, cy, r, 0.0, 6.283185307179586);
-                        ctx.set_fill_style(&JsValue::from_str("#e0e040"));
-                        ctx.fill();
+                        render_hint(x, y);
                     }
 
-                    let piece = position.piece_at(square);
-                    let (fill, present) = match piece {
-                        Some(engine::Color::Black) => ("#000000", true),
-                        Some(engine::Color::White) => ("#f0f0f0", true),
-                        None => ("#000000", false),
-                        Some(_) => ("#808080", true),
-                    };
-                    if present {
-                        let r = cell_size * 0.40;
-                        let cx = left + cell_size / 2.0;
-                        let cy = top + cell_size / 2.0;
-                        ctx.begin_path();
-                        let _: Result<(), JsValue> = ctx.arc(cx, cy, r, 0.0, 6.283185307179586);
-                        ctx.set_fill_style(&JsValue::from_str(fill));
-                        ctx.fill();
+                    match position.piece_at(square) {
+                        Some(engine::Color::Black) => render_cell(x, y, COLOR_BLACK),
+                        Some(engine::Color::White) => render_cell(x, y, COLOR_WHITE),
+                        _ => {}
                     }
                 }
             }
+
+            render_end();
         }
     }
 
@@ -326,6 +321,8 @@ mod non_wasm_stub {
             Self
         }
 
+        pub fn set_black_alphabeta(&mut self, _depth: u8) {}
+
         pub fn set_black_random(&mut self, _seed: u64) {}
 
         pub fn set_black_human(&mut self) {}
@@ -344,19 +341,31 @@ mod non_wasm_stub {
             false
         }
 
-        pub fn tick_ai(&mut self, _now_ms: f64) -> u32 {
+        pub fn tick_ai(&mut self) -> u32 {
             0
         }
-
-        pub fn arm_ai_delay(&mut self, _now_ms: f64) {}
 
         pub fn tick(&mut self, _max_steps: u32) -> u32 {
             0
         }
 
-        pub fn status_text(&self) -> String {
-            "wasm App is available only on wasm32".to_string()
+        pub fn count_black(&self) -> u32 {
+            0
         }
+
+        pub fn count_white(&self) -> u32 {
+            0
+        }
+
+        pub fn side_to_move(&self) -> u8 {
+            255
+        }
+
+        pub fn status_code(&self) -> u8 {
+            255
+        }
+
+        pub fn render(&self) {}
     }
 }
 

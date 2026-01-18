@@ -38,6 +38,26 @@ pub struct Game {
 }
 
 impl Game {
+    /// 現手番に合法手が無い場合、パスを自動適用する。
+    ///
+    /// UI 側で「人間が打てない状態で入力待ちのまま止まる」ことを避けるための補助。
+    ///
+    /// - すでに終局している場合は何もしない（`false`）。
+    /// - 合法手がある場合は何もしない（`false`）。
+    /// - パスを適用できた場合は `true`。
+    #[inline]
+    pub fn auto_pass_if_needed(&mut self) -> bool {
+        if self.is_game_over() {
+            return false;
+        }
+
+        if self.position.legal_moves() != u64::MIN {
+            return false;
+        }
+
+        self.play(None).is_ok()
+    }
+
     /// 初期局面からゲームを開始する。
     #[inline]
     #[must_use]
@@ -128,5 +148,73 @@ impl Game {
         }
 
         Status::InProgress
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Game;
+    use crate::ai::random;
+    use crate::ai::types::Ai as _;
+    use crate::ai::types::Move;
+    use crate::engine::position::Position;
+
+    fn find_position_where_current_player_must_pass() -> Option<Position> {
+        // 決定的に見つかるまで seed を変えつつ探索する。
+        for seed in 0_u64..256 {
+            let mut agent = random::Agent::new(seed);
+            let mut pos = Position::initial();
+
+            // 最大 60 手程度で終局するので余裕を持たせる。
+            for _ply in 0_u16..100 {
+                let side = pos.side_to_move();
+                let my_moves = pos.legal_moves_for(side);
+                let opp_moves = pos.legal_moves_for(side.opponent());
+
+                // 相手は打てるが自分は打てない（＝パスが必要）。
+                if my_moves == u64::MIN && opp_moves != u64::MIN {
+                    return Some(pos);
+                }
+
+                // 終局（双方パス）に到達したらこの seed は諦める。
+                if my_moves == u64::MIN && opp_moves == u64::MIN {
+                    break;
+                }
+
+                let mv = agent.select_move(pos);
+                let next = match mv {
+                    Move::Pass => Ok(pos.pass()),
+                    Move::Place(square) => pos.apply_move(square),
+                };
+                pos = match next {
+                    Ok(value) => value,
+                    Err(_err) => break,
+                };
+            }
+        }
+
+        None
+    }
+
+    #[test]
+    fn auto_pass_if_needed_switches_turn_when_no_legal_moves() {
+        let pos_opt = find_position_where_current_player_must_pass();
+        assert!(pos_opt.is_some(), "pass position not found in deterministic search");
+        let pos = pos_opt.unwrap_or_else(Position::initial);
+
+        let side_before = pos.side_to_move();
+        assert_eq!(pos.legal_moves(), u64::MIN);
+        assert_ne!(pos.legal_moves_for(side_before.opponent()), u64::MIN);
+
+        let mut game = Game {
+            consecutive_passes: 0,
+            position: pos,
+        };
+
+        assert!(!game.is_game_over());
+        assert!(game.auto_pass_if_needed());
+        assert_eq!(game.side_to_move(), side_before.opponent());
+        assert_ne!(game.position().legal_moves(), u64::MIN);
+        assert!(!game.is_game_over());
     }
 }

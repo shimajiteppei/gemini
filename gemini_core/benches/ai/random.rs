@@ -1,10 +1,10 @@
 //! `core::ai::random` の性能計測（1手選択）。
 
+use core::hint::black_box;
 use criterion::BatchSize;
 use criterion::BenchmarkId;
 use criterion::Criterion;
-use criterion::black_box;
-use gemini_core::ai::types::Ai;
+use gemini_core::ai::types::Ai as _;
 use gemini_core::{ai, engine};
 
 /// `cargo bench` の引数を取り込みつつ `Criterion` を生成する。
@@ -29,9 +29,8 @@ fn position_after_plies(plies: u16) -> engine::Position {
         };
 
         let play_result = match mv {
-            ai::Move::Pass => game.play(None),
             ai::Move::Place(square) => game.play(Some(square)),
-            _ => game.play(None),
+            ai::Move::Pass | _ => game.play(None),
         };
 
         let status = match play_result {
@@ -67,7 +66,7 @@ fn bench_select_move(criterion: &mut Criterion) {
                 || ai::random::Agent::new(u64::MIN),
                 |mut agent| black_box(agent.select_move(*input)),
                 BatchSize::SmallInput,
-            )
+            );
         });
     }
 

@@ -111,6 +111,21 @@ impl Position {
         (self.black.count_ones(), self.white.count_ones())
     }
 
+    /// 盤面を生のビットボードから生成する（crate 内部向け）。
+    ///
+    /// - `black` と `white` は重複しないこと（`black & white == 0`）
+    /// - 盤面の妥当性（合法手が存在するか等）は呼び出し側が保証する
+    #[cfg(test)]
+    #[inline]
+    #[must_use]
+    pub(crate) const fn from_raw(black: u64, white: u64, side_to_move: Color) -> Self {
+        Self {
+            black,
+            side_to_move,
+            white,
+        }
+    }
+
     /// 初期局面を返す。
     #[inline]
     #[must_use]

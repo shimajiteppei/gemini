@@ -309,6 +309,14 @@ fn main() -> Result<(), String> {
             }
         }
 
+        // 人間手番だが合法手が無い場合は自動パスして、ゲーム進行が止まらないようにする。
+        if !app.game.is_game_over() {
+            let side = app.game.side_to_move();
+            if app.controller_for(side).is_human() {
+                did_human_move |= app.game.auto_pass_if_needed();
+            }
+        }
+
         if did_human_move {
             // 人間の手を打った直後に一度描画更新する。
             draw_and_present(&mut canvas, &app);

@@ -1,28 +1,22 @@
 <html>
 
-<body style="margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">
+<body>
 <div style="display: flex; gap: 12px; padding: 10px; align-items: center; flex-wrap: wrap;">
     <button id="new-game" type="button">New Game</button>
-    <button id="pass" type="button">Pass</button>
-    <label style="display: inline-flex; gap: 6px; align-items: center;">
-        White depth
-        <input id="white-depth" type="number" min="1" max="20" step="1" value="6" style="width: 4.5em;" />
-    </label>
     <span id="status" style="white-space: pre; font-variant-numeric: tabular-nums;"></span>
 </div>
 
-<canvas id="canvas" style="display: block; width: 90vmin; height: 90vmin; touch-action: none;"></canvas>
+<canvas id="canvas" width="256" height="240" style="height: 90vh;"></canvas>
 
 <script type="module">
     import init, { App } from "./pkg/gemini_wasm.js";
 
-    const OFFSET = 8; // wasm/src/lib.rs の OFFSET と合わせる（CSS px 単位で扱う）
+    const OFFSET = 8; // 盤面描画のオフセット（CSS px 単位）
+    const AI_DELAY_MS = 300;
 
     const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("canvas"));
     const statusEl = document.getElementById("status");
     const newGameBtn = document.getElementById("new-game");
-    const passBtn = document.getElementById("pass");
-    const whiteDepthInput = /** @type {HTMLInputElement} */ (document.getElementById("white-depth"));
 
     /** @type {CanvasRenderingContext2D} */
     const ctx = canvas.getContext("2d");
@@ -34,14 +28,102 @@
 
     /** @type {App} */
     let app;
+    let level = 20;
+
+    // 0=Black, 1=White
+    let humanSide = 0;
+    let seed = 0;
+
     let cellSize = 30;
     let needsRedraw = true;
+    /** @type {number | null} */
+    let nextAiDueMs = null;
+
+    // ===== WASM 側から呼ばれる描画イベント（実描画は JS） =====
+    function cellLeft(x) {
+        return OFFSET + x * cellSize;
+    }
+
+    function cellTop(y) {
+        return OFFSET + y * cellSize;
+    }
+
+    window.render_begin = () => {
+        const boardLen = 8;
+        const boardPx = boardLen * cellSize;
+        const full = boardPx + OFFSET * 2;
+
+        ctx.fillStyle = "#105010";
+        ctx.fillRect(0, 0, full, full);
+
+        for (let y = 0; y < 8; y++) {
+            for (let x = 0; x < 8; x++) {
+                const left = cellLeft(x);
+                const top = cellTop(y);
+
+                ctx.fillStyle = "#008000";
+                ctx.fillRect(left, top, cellSize, cellSize);
+
+                ctx.strokeStyle = "#000000";
+                ctx.strokeRect(left, top, cellSize, cellSize);
+            }
+        }
+    };
+
+    window.render_hint = (x, y) => {
+        const left = cellLeft(x);
+        const top = cellTop(y);
+        const r = cellSize / 10;
+        const cx = left + cellSize / 2;
+        const cy = top + cellSize / 2;
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = "#e0e040";
+        ctx.fill();
+    };
+
+    window.render_cell = (x, y, color) => {
+        const left = cellLeft(x);
+        const top = cellTop(y);
+        const r = cellSize * 0.4;
+        const cx = left + cellSize / 2;
+        const cy = top + cellSize / 2;
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+
+        // Rust 側の定義: 0=Black, 1=White
+        ctx.fillStyle = color === 0 ? "#000000" : "#f0f0f0";
+        ctx.fill();
+    };
+
+    window.render_end = () => {
+        // no-op
+    };
 
     function newGame() {
-        const depth = Math.max(1, Math.min(20, Number.parseInt(whiteDepthInput.value || "6", 10) || 6));
-        whiteDepthInput.value = String(depth);
-        app = new App(depth);
+        app = new App(level);
+        seed = Math.floor(Math.random() * 100);
+        humanSide = seed >= 50;
+
+        if (humanSide) {
+            // human (Black) vs AI (White)
+            app.set_black_human();
+            app.set_white_random(BigInt(seed));
+            nextAiDueMs = null;
+        } else {
+            // AI (Black) vs human (White)
+            app.set_black_alphabeta(level);
+            app.set_white_human();
+            nextAiDueMs = performance.now() + AI_DELAY_MS;
+        }
+
         needsRedraw = true;
+    }
+
+    function armAiDelay(nowMs) {
+        nextAiDueMs = nowMs + AI_DELAY_MS;
     }
 
     function resize() {
@@ -58,9 +140,38 @@
         needsRedraw = true;
     }
 
+    function sideText(side) {
+        // Rust 側の定義: 0=Black, 1=White, 255=Unknown
+        if (side === 0) return "Black";
+        if (side === 1) return "White";
+        return "Unknown";
+    }
+
+    function statusTextFromApp() {
+        const black = app.count_black();
+        const white = app.count_white();
+        const side = app.side_to_move();
+        const status = app.status_code();
+        const you = sideText(humanSide);
+
+        if (status === 0) {
+            return `${sideText(side)} to move | You=${you} | B=${black} W=${white}`;
+        }
+        if (status === 1) {
+            return `Game Over: Black wins | B=${black} W=${white}`;
+        }
+        if (status === 2) {
+            return `Game Over: White wins | B=${black} W=${white}`;
+        }
+        if (status === 3) {
+            return `Game Over: Draw | B=${black} W=${white}`;
+        }
+        return `Unknown status | B=${black} W=${white}`;
+    }
+
     function render() {
-        app.render(ctx, cellSize);
-        statusEl.textContent = app.status_text();
+        app.render();
+        statusEl.textContent = statusTextFromApp();
         needsRedraw = false;
     }
 
@@ -78,13 +189,7 @@
         const xy = canvasToBoardXY(e.clientX, e.clientY);
         if (!xy) return;
         if (app.click(xy.x, xy.y)) {
-            needsRedraw = true;
-            render();
-        }
-    });
-
-    passBtn.addEventListener("click", () => {
-        if (app.pass()) {
+            armAiDelay(performance.now());
             needsRedraw = true;
             render();
         }
@@ -102,13 +207,25 @@
         resize();
 
         const frame = () => {
-            // AI 手番は 0.3 秒遅延させつつ、1 手ずつ進めて都度描画する。
-            const done = app.tick_ai(performance.now());
+            const now = performance.now();
+            let done = 0;
+
+            if (nextAiDueMs !== null && now >= nextAiDueMs) {
+                done = app.tick_ai();
+                if (done > 0) {
+                    // 連続で AI 手番が続く場合（CPU vs CPU / auto-pass など）も、1手ずつ遅延させる。
+                    armAiDelay(now);
+                    needsRedraw = true;
+                } else {
+                    nextAiDueMs = null;
+                }
+            }
+
             if (done > 0 || needsRedraw) {
                 render();
             } else {
                 // 手番が人間でもステータスは更新したい
-                statusEl.textContent = app.status_text();
+                statusEl.textContent = statusTextFromApp();
             }
             requestAnimationFrame(frame);
         };

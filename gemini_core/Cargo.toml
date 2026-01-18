@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 tracing = "0.1.44"
-tracing-subscriber = {version = "0.3.22", features = ["json"]}
+tracing-subscriber = { version = "0.3.22", features = ["json"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.1", features = ["html_reports"] }
@@ -26,6 +26,7 @@ name = "engine"
 path = "benches/engine.rs"
 
 [lints.clippy]
+# blanket settings for each clippy lint group
 cargo = { level = "allow", priority = -1 }
 complexity = { level = "warn", priority = -1 }
 correctness = { level = "deny", priority = -1 }
@@ -34,8 +35,14 @@ pedantic = { level = "warn", priority = -1 }
 perf = { level = "deny", priority = -1 }
 restriction = { level = "deny", priority = -1 }
 style = { level = "warn", priority = -1 }
-suspicious = {level = "warn", priority = -1}
+suspicious = { level = "warn", priority = -1 }
 
+# priority settings for conflicting rules
+blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
+self_named_module_files = { level = "allow", priority = 1 }
+separated_literal_suffix = { level = "allow", priority = 1 }
+pub_with_shorthand = { level = "allow", priority = 1 }
+
+# relaxation settings for overly strict rules
 single_call_fn = { level = "allow", priority = 1 }
 implicit_return = { level = "allow", priority = 1 }
-self_named_module_files = { level = "allow", priority = 1 }
